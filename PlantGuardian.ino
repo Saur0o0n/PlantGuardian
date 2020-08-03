@@ -1,16 +1,36 @@
 #include "ESP8266WiFi.h" // Enables the ESP8266 to connect to the local network (via WiFi)
 #include "PubSubClient.h" // Allows us to connect to, and publish to the MQTT broker
+#include <Wire.h>
+#include <SPI.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BME280.h>
+#include <BH1750.h>
 
+#define PLANTGUARDIAN "plantguardian01"
+
+// Moisture stuff
 const int MoistPin01 = A0;  // ESP8266 Analog Pin ADC0 = A0
-const int Plant01Pin = D10;
-const int Plant02Pin = D11;
+const int Plant01Pin = D8;
+const int Plant02Pin = D7;
 
 const int MoistMax = 700;
 const int MoistMin = 1;
 
+// Other sensors
+const int SensorEnaPin = D3; // This ping enables transistor to all other sensors (water level, temperature, humidity, pressure etc)
+const int WaterPin = D1;     // Water level pin
+const int I2C_SCL = D6;
+const int I2C_SCA = D5;
+
+#define SEALEVELPRESSURE_HPA (1013.25)
+
+Adafruit_BME280 bme; // I2C
+BH1750 lightMeter(0x23);
+
+
 // WiFi
-const char* ssid = "PutWiFiHere";
-const char* wifi_password = "PutWiFiPassword";
+const char* ssid = "WiFi";
+const char* wifi_password = "Pass";
 
 int sensorValue01 = 0;  // value read from the pot
 int outputValue01 = 0;  // value to output to a PWM pin
@@ -21,15 +41,15 @@ byte error = 0;
 
 // MQTT
 // Make sure to update this for your own MQTT Broker!
-const char* mqtt_server = "Mqtt IP";
-const char* mqtt_username = "Mqtt login";
-const char* mqtt_password = "Mqtt password";
-const char* plant_topic = "homeassistant/sensor/plantguardian/state";
-const char* plant1_config_topic = "homeassistant/sensor/plantguardian/plant1/config";
-const char* plant2_config_topic = "homeassistant/sensor/plantguardian/plant2/config";
-const char* plant1_config = "{\"device_class\": \"humidity\", \"name\": \"Plant 1 moisture\", \"state_topic\": \"homeassistant/sensor/plantguardian/state\", \"unit_of_measurement\": \"%\", \"unique_id\": \"plantguard_sensor_01\", \"value_template\": \"{{ value_json.moisture1}}\" }";
-const char* plant2_config = "{\"device_class\": \"humidity\", \"name\": \"Plant 2 moisture\", \"state_topic\": \"homeassistant/sensor/plantguardian/state\", \"unit_of_measurement\": \"%\", \"unique_id\": \"plantguard_sensor_02\", \"value_template\": \"{{ value_json.moisture2}}\" }";
+const char* mqtt_server = "192.168.70.100";
+const char* plant_topic = "homeassistant/sensor/"PLANTGUARDIAN"/state";
+const char* plant1_config_topic = "homeassistant/sensor/"PLANTGUARDIAN"/plant1/config";
+const char* plant2_config_topic = "homeassistant/sensor/"PLANTGUARDIAN"/plant2/config";
+const char* plant1_config = "{\"device_class\": \"humidity\", \"name\": \"Plant 1 moisture\", \"state_topic\": \"homeassistant/sensor/"PLANTGUARDIAN"/state\", \"unit_of_measurement\": \"%\", \"unique_id\": \"plantguard_sensor_01\", \"value_template\": \"{{ value_json.moisture1}}\" }";
+const char* plant2_config = "{\"device_class\": \"humidity\", \"name\": \"Plant 2 moisture\", \"state_topic\": \"homeassistant/sensor/"PLANTGUARDIAN"/state\", \"unit_of_measurement\": \"%\", \"unique_id\": \"plantguard_sensor_02\", \"value_template\": \"{{ value_json.moisture2}}\" }";
 
+const char* mqtt_username = "mqttname";
+const char* mqtt_password = "mqttpass";
 // The client id identifies the ESP8266 device. Think of it a bit like a hostname (Or just a name, like Greg).
 const char* clientID = "PlantSensors";
 
@@ -167,6 +187,60 @@ void readMoisture() {
   digitalWrite(LED_BUILTIN, HIGH);
 }
 
+
+void read_sensors(){
+  digitalWrite(LED_BUILTIN, LOW);  // Turn the LED off by making the voltage LOW - just to see the sensor is operating
+
+//
+// Enable sensors
+  digitalWrite(SensorEnaPin, HIGH);  // Turn the relay ON
+  delay(200);
+
+// Read water level
+
+// Read temperature, pressure, humidity and light lux
+  Wire.begin(I2C_SCL,I2C_SCA);
+// Start BME280
+  if (bme.begin(0x76, &Wire)) {
+       bme.setSampling(Adafruit_BME280::MODE_FORCED,
+                    Adafruit_BME280::SAMPLING_X16,  // temperature
+                    Adafruit_BME280::SAMPLING_X16,  // pressure
+                    Adafruit_BME280::SAMPLING_X16,  // humidity
+                    Adafruit_BME280::FILTER_OFF);
+
+    Serial.print("Temperature = ");
+    Serial.print(bme.readTemperature());
+    Serial.println(" *C");
+
+    Serial.print("Pressure = ");
+
+    Serial.print(bme.readPressure() / 100.0F);
+    Serial.println(" hPa");
+
+    Serial.print("Approx. Altitude = ");
+    Serial.print(bme.readAltitude(SEALEVELPRESSURE_HPA));
+    Serial.println(" m");
+
+    Serial.print("Humidity = ");
+    Serial.print(bme.readHumidity());
+    Serial.println(" %");
+
+    Serial.println();
+  }
+// Start light sensor
+  if (lightMeter.begin(BH1750::ONE_TIME_HIGH_RES_MODE)) {
+    Serial.println(F("BH1750 Advanced begin"));
+    float lux = lightMeter.readLightLevel();
+    Serial.print("Light: ");
+    Serial.print(lux);
+    Serial.println(" lx");
+  }
+
+  digitalWrite(SensorEnaPin, LOW);  // Turn the relay OFF
+  digitalWrite(LED_BUILTIN, HIGH);
+}
+
+
 void setup() {
   uint16_t next_boot;
 
@@ -200,6 +274,8 @@ void setup() {
 
     
     readMoisture();
+
+    read_sensors();
   
     char msg[20];
     sprintf(msg,"{\"moisture1\":%d,\"moisture2\":%d}",outputValue01,outputValue02);
@@ -210,8 +286,9 @@ void setup() {
   
     delay(500);
   }
-  ESP.deepSleep(60e6);
-  //ESP.deepSleep(30e6);
+  //ESP.deepSleep(60e6);
+  Serial.println("Sleeping...");
+  ESP.deepSleep(30e6);
 }
 
 void loop() {
