@@ -2,7 +2,7 @@
 Simple project to allow monitor soil/plant vital parameters on ESP boards
 
 It's still work in progress - but it's working. I guess there is ton of other projects like this one - perhaps this is unique because of:
-- it uses mqtt to report soil moisture
+- it uses MQTT to report soil moisture
 - it's autodiscoverable by Home Assistant
 - it allows you to connect more (as many, as there is digital pins) then one sensor to ESP8266 (this chip has only one ADC pin)
 - it does not push current trough sensor all the time - only when measuring - this way, resistive sensor can work years (otherwise days)
@@ -20,4 +20,5 @@ Of course, you could make this power consumption much smaller - if you get rid o
 - 10 kOhm resistor - to measure soil sensors
 - BME/MBP280 sensor board
 - BH1750 sensor board
- 
+
+Alternatively you can add capacitive water sensor - to sens (in my case) if there is still enough water in the water tank. 
