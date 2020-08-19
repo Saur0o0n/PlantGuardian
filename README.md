@@ -22,3 +22,6 @@ Of course, you could make this power consumption much smaller - if you get rid o
 - BH1750 sensor board
 
 Alternatively you can add capacitive water sensor - to sens (in my case) if there is still enough water in the water tank. 
+
+![PlantGuardian wiring](https://raw.githubusercontent.com/Saur0o0n/PlantGuardian/master/Documentation/PlantGuardian.png)
+
