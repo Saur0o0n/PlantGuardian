@@ -5,32 +5,40 @@
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BME280.h>
 #include <BH1750.h>
+#include <ESP8266HTTPClient.h>
+#include <ESP8266httpUpdate.h>
+#include<ADS1115_WE.h>
 
 #define PLANTGUARDIAN "plantguardian"
+#define PGVer "v1.1"
+#define I2C_ADDRESS 0x48
 
 // Moisture stuff
 const int MoistPin01 = A0;  // ESP8266 Analog Pin ADC0 = A0
 const int Plant01Pin = D8;
 const int Plant02Pin = D7;
 
-const int MoistMax = 950;
+const int MoistMax = 1024;
 const int MoistMin = 1;
 
 // Other sensors
 const int SensorEnaPin = D1; // This ping enables transistor to all other sensors (water level, temperature, humidity, pressure etc)
-const int WaterPin = D2;     // Water level pin
-const int I2C_SCL = D6;
-const int I2C_SCA = D5;
+const int WaterEnaPin = D2;  // Pin that enables water level transistor and step up board
+const int WaterPin = D3;     // Water level pin
+const int I2C_SCL = D5;
+const int I2C_SCA = D6;
 
 #define SEALEVELPRESSURE_HPA (1013.25)
 
 Adafruit_BME280 bme; // I2C
 BH1750 lightMeter(0x23);
-
+ADS1115_WE adc(I2C_ADDRESS);
 
 // WiFi
-const char* ssid = "wifi";
-const char* wifi_password = "pass";
+const char* ssid = "WiFi_SSID";
+const char* wifi_password = "WiFi_PASS";
+
+const char* PG_UpdateFile = "http://some.url/some_path/PlantGuardian"PGVer".ino.bin";
 
 int sensorValue01 = 0;  // value read from the pot
 int outputValue01 = 0;  // value to output to a PWM pin
@@ -41,16 +49,18 @@ float humidityValue = 0;
 float pressureValue = 0;
 float illuValue = 0;
 float altitudeValue = 0;
+float bat_volt = 0, sol_volt = 0;
+
 bool waterValue = 1;    // 1 = full, 0 = empty
 byte error = 0;
 
 
 // MQTT
 // Make sure to update this for your own MQTT Broker!
-const char* mqtt_server = "192.168.70.100";
+const char* mqtt_server = "mqtt_ip_address";
 const char* plant_topic = "homeassistant/sensor/"PLANTGUARDIAN"/state";
-const char* mqtt_username = "username";
-const char* mqtt_password = "pass";
+const char* mqtt_username = "mqtt_username";
+const char* mqtt_password = "mqtt_password";
 
 const char* plant1_config_topic = "homeassistant/sensor/"PLANTGUARDIAN"/plant1/config";
 const char* plant2_config_topic = "homeassistant/sensor/"PLANTGUARDIAN"/plant2/config";
@@ -75,12 +85,27 @@ const char* illu_config = "{\"device_class\": \"illuminance\", \"name\": \"Plant
 const char* water_config_topic = "homeassistant/sensor/"PLANTGUARDIAN"/waterlevel/config";
 const char* water_config = "{ \"name\": \"Water level\", \"state_topic\": \"homeassistant/sensor/"PLANTGUARDIAN"/state\", \"unique_id\": \"water_level\", \"value_template\": \"{{ value_json.water_level}}\" }";
 
+const char* voltage_bat_config_topic = "homeassistant/sensor/"PLANTGUARDIAN"/voltage_battery/config";
+const char* voltage_bat_config = "{\"device_class\": \"voltage\", \"name\": \"Battery Voltage\", \"state_topic\": \"homeassistant/sensor/"PLANTGUARDIAN"/state\", \"unit_of_measurement\": \"V\", \"unique_id\": \"voltage_battery\", \"value_template\": \"{{ value_json.voltage_battery}}\" }";
+
+const char* voltage_sol_config_topic = "homeassistant/sensor/"PLANTGUARDIAN"/voltage_solar/config";
+const char* voltage_sol_config = "{\"device_class\": \"voltage\", \"name\": \"Solar Voltage\", \"state_topic\": \"homeassistant/sensor/"PLANTGUARDIAN"/state\", \"unit_of_measurement\": \"V\", \"unique_id\": \"voltage_solar\", \"value_template\": \"{{ value_json.voltage_solar}}\" }";
+
 // The client id identifies the ESP8266 device. Think of it a bit like a hostname (Or just a name, like Greg).
 const char* clientID = "PlantSensors";
 
 // Initialise the WiFi and MQTT Client objects
 WiFiClient wifiClient;
 PubSubClient client(mqtt_server, 1883, wifiClient); // 1883 is the listener port for the Broker
+
+//Static IP address configuration
+IPAddress staticIP(192, 168, 70, 34); //ESP static ip
+IPAddress gateway(192, 168, 70, 100); //IP Address of your WiFi Router (Gateway)
+IPAddress subnet(255, 255, 255, 0);   //Subnet mask
+IPAddress dns(192, 168, 70, 100);     //DNS
+ 
+ 
+const char* deviceName = "PlantGuardian";
 
 
 
@@ -120,13 +145,16 @@ void connect_MQTT(){
   Serial.print("Connecting to ");
   Serial.println(ssid);
 
+  WiFi.hostname(deviceName);      // DHCP Hostname (useful for finding device for static lease)
+  WiFi.config(staticIP, subnet, gateway, dns);
+
   // Connect to the WiFi
   WiFi.begin(ssid, wifi_password);
 
   // Wait until the connection has been confirmed before continuing
   byte cnt=0;
   while (WiFi.status() != WL_CONNECTED && cnt++<15) {
-    delay(500);
+    delay(1000);
     Serial.print(".");
   }
 
@@ -137,6 +165,8 @@ void connect_MQTT(){
   
   // Debugging - Output the IP Address of the ESP8266
   Serial.println("WiFi connected");
+  Serial.print("MAC: ");
+  Serial.println(WiFi.macAddress());
   Serial.print("IP address: ");
   Serial.println(WiFi.localIP());
 
@@ -175,6 +205,9 @@ void advertise_MQTT(){
   client.publish(illu_config_topic,illu_config);
   client.publish(alti_config_topic,alti_config);
   client.publish(water_config_topic,water_config);
+  client.publish(voltage_bat_config_topic,voltage_bat_config);
+  client.publish(voltage_sol_config_topic,voltage_sol_config);
+    
 }
 
 
@@ -219,6 +252,16 @@ void readMoisture() {
   digitalWrite(Plant02Pin, LOW);   // Turn off relay
 
   digitalWrite(LED_BUILTIN, HIGH);
+}
+
+
+float readChannel(ADS1115_MUX channel) {
+  float voltage = 0.0;
+  adc.setCompareChannels(channel);
+  adc.startSingleMeasurement();
+  while(adc.isBusy()){}
+  voltage = adc.getResult_V(); // alternative: getResult_mV for Millivolt
+  return voltage;
 }
 
 
@@ -270,20 +313,61 @@ void read_sensors(){
     Serial.println(" lx");
   }
 
+// Detect voltage
+  if(!adc.init()){
+    Serial.println("ADS1115 not connected!");
+  }else{
+    adc.setVoltageRange_mV(ADS1115_RANGE_6144);
+    bat_volt = readChannel(ADS1115_COMP_0_GND);
+    sol_volt = readChannel(ADS1115_COMP_1_GND);
+    Serial.printf(" Battery voltage: %f,  solar voltage: %f\n",bat_volt, sol_volt);
+  }
+  
+  digitalWrite(SensorEnaPin, LOW);  // Turn the sensor relay OFF
+
+
+
+
+// Enable water sensor
+  digitalWrite(WaterEnaPin, HIGH);  // Turn the relay ON
+  delay(500);
 // Start capacitance water sensor (for water tank)
   byte waterTmp=0;
   for(byte a=0; a<5; a++){
     waterTmp+=digitalRead(WaterPin);
-    delay(10);
+    delay(20);
   }
   if(waterTmp>3) waterValue=1;  // If more then 3 check where high = report 1 (there is water)
   else waterValue=0;
   Serial.printf("Water sensor report %d of 5 checks, reporting %d\n",waterTmp,waterValue);
 
   Serial.println();
-  delay(3000);
-  digitalWrite(SensorEnaPin, LOW);  // Turn the relay OFF
+  delay(200);
+  digitalWrite(WaterEnaPin, LOW);  // Turn the Water relay OFF
+  delay(1000);  // just to see the led light on
   digitalWrite(LED_BUILTIN, HIGH);
+}
+
+void WiFi_update(){
+  WiFiClient client;
+
+  Serial.printf("Trying to download update file: %s\n",PG_UpdateFile);
+  t_httpUpdate_return ret = ESPhttpUpdate.update(client, PG_UpdateFile);
+  //t_httpUpdate_return ret = ESPhttpUpdate.update(client, "server", 80, "file.bin");
+  
+  switch (ret) {
+      case HTTP_UPDATE_FAILED:
+        Serial.printf("HTTP_UPDATE_FAILD Error (%d): %s\n", ESPhttpUpdate.getLastError(), ESPhttpUpdate.getLastErrorString().c_str());
+        break;
+
+      case HTTP_UPDATE_NO_UPDATES:
+        Serial.println("HTTP_UPDATE_NO_UPDATES");
+        break;
+
+      case HTTP_UPDATE_OK:
+        Serial.println("HTTP_UPDATE_OK");
+        break;
+    }
 }
 
 
@@ -296,10 +380,12 @@ void setup() {
   pinMode(Plant01Pin, OUTPUT);    // Initialize the transistor pin as an output
   pinMode(Plant02Pin, OUTPUT);
   pinMode(SensorEnaPin, OUTPUT);
+  pinMode(WaterEnaPin, OUTPUT);
   pinMode(WaterPin, INPUT);
   digitalWrite(Plant01Pin, LOW);  // Just in case...
   digitalWrite(Plant02Pin, LOW);
   digitalWrite(SensorEnaPin, LOW);
+  digitalWrite(WaterEnaPin, LOW);
 //  Serial.setTimeout(2000);
 
   connect_MQTT();
@@ -314,7 +400,10 @@ void setup() {
     }else Serial.printf("Next boot - read RTC data\n");
 
     Serial.printf("RTC boot value:%d\n",next_boot);
-    if(next_boot==1) advertise_MQTT();
+    if(next_boot==1){
+      advertise_MQTT();
+      WiFi_update();  // check if there is an update
+    }
     
     if(next_boot++>20) next_boot=1;
         
@@ -328,8 +417,8 @@ void setup() {
 
     read_sensors();
   
-    char msg[140];
-    sprintf(msg,"{\"moisture1\":%d,\"moisture2\":%d,\"temperature\":%.2f,\"humidity\":%.1f,\"pressure\":%.1f,\"altitude\":%.1f,\"illuminance\":%.1f,\"water_level\":%d}",outputValue01,outputValue02,temperatureValue,humidityValue,pressureValue,altitudeValue,illuValue,waterValue);
+    char msg[220];
+    sprintf(msg,"{\"moisture1\":%d,\"moisture2\":%d,\"temperature\":%.2f,\"humidity\":%.1f,\"pressure\":%.1f,\"altitude\":%.1f,\"illuminance\":%.1f,\"water_level\":%d,\"voltage_battery\":%0.2f,\"voltage_solar\":%0.2f}",outputValue01,outputValue02,temperatureValue,humidityValue,pressureValue,altitudeValue,illuValue,waterValue,bat_volt,sol_volt);
   // PUBLISH to the MQTT Broker
     if (client.publish(plant_topic, msg)) {
       Serial.printf("Sensors data sent as: %s\n",plant_topic);
@@ -338,6 +427,7 @@ void setup() {
     delay(500);
   }
   Serial.println("Sleeping...");
+  Serial.end();
 
   digitalWrite(Plant01Pin, LOW);  // Just in case...
   digitalWrite(Plant02Pin, LOW);
@@ -349,8 +439,8 @@ void setup() {
 
   //ESP.deepSleep(30e6);
   //ESP.deepSleep(60e6);
-  ESP.deepSleep(120e6);
-  //ESP.deepSleep(360e6);
+  //ESP.deepSleep(120e6);
+  ESP.deepSleep(360e6);
 }
 
 void loop() {
