@@ -1,13 +1,18 @@
+/*
+** PlantGuardian by Sauron 2020-2021
+** Last update: 23.06.2021
+*/
 #include "ESP8266WiFi.h" // Enables the ESP8266 to connect to the local network (via WiFi)
 #include "PubSubClient.h" // Allows us to connect to, and publish to the MQTT broker
 #include <Wire.h>
 #include <SPI.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BME280.h>
+#include <Adafruit_BMP280.h>
 #include <BH1750.h>
 #include <ESP8266HTTPClient.h>
 #include <ESP8266httpUpdate.h>
-#include<ADS1115_WE.h>
+#include <ADS1115_WE.h>
 
 #define PLANTGUARDIAN "plantguardian"
 #define PGVer "v1.1"
@@ -30,15 +35,14 @@ const int I2C_SCA = D6;
 
 #define SEALEVELPRESSURE_HPA (1013.25)
 
-Adafruit_BME280 bme; // I2C
 BH1750 lightMeter(0x23);
 ADS1115_WE adc(I2C_ADDRESS);
 
 // WiFi
-const char* ssid = "WiFi_SSID";
-const char* wifi_password = "WiFi_PASS";
+const char* ssid = "SauronIoT";
+const char* wifi_password = "Dupa123123";
 
-const char* PG_UpdateFile = "http://some.url/some_path/PlantGuardian"PGVer".ino.bin";
+const char* PG_UpdateFile = "http://adrian.siemieniak.net/Rozne/PlantGuardian"PGVer".ino.bin";
 
 int sensorValue01 = 0;  // value read from the pot
 int outputValue01 = 0;  // value to output to a PWM pin
@@ -57,10 +61,10 @@ byte error = 0;
 
 // MQTT
 // Make sure to update this for your own MQTT Broker!
-const char* mqtt_server = "mqtt_ip_address";
+const char* mqtt_server = "192.168.70.100";
 const char* plant_topic = "homeassistant/sensor/"PLANTGUARDIAN"/state";
-const char* mqtt_username = "mqtt_username";
-const char* mqtt_password = "mqtt_password";
+const char* mqtt_username = "saurons_iot";
+const char* mqtt_password = "heeZeel8ohkio9eidaiRoo";
 
 const char* plant1_config_topic = "homeassistant/sensor/"PLANTGUARDIAN"/plant1/config";
 const char* plant2_config_topic = "homeassistant/sensor/"PLANTGUARDIAN"/plant2/config";
@@ -211,8 +215,9 @@ void advertise_MQTT(){
 }
 
 
-
-
+/*
+** 
+*/
 void readMoisture() {
 
   digitalWrite(LED_BUILTIN, LOW);  // Turn the LED on by making the voltage LOW - just to see the sensor is operating
@@ -255,6 +260,9 @@ void readMoisture() {
 }
 
 
+/*
+** 
+*/
 float readChannel(ADS1115_MUX channel) {
   float voltage = 0.0;
   adc.setCompareChannels(channel);
@@ -265,19 +273,90 @@ float readChannel(ADS1115_MUX channel) {
 }
 
 
-void read_sensors(){
-  digitalWrite(LED_BUILTIN, LOW);  // Turn the LED on by making the voltage LOW - just to see the sensor is operating
+/*
+** 
+*/
+void i2c_scanner(){
+  byte error, address;
+  int nDevices;
 
-//
-// Enable sensors
-  digitalWrite(SensorEnaPin, HIGH);  // Turn the relay ON
-  delay(200);
+  Serial.println("Scanning for i2c devices...");
+  
+    nDevices = 0;
+  for(address = 1; address < 127; address++ ) 
+  {
+    // The i2c_scanner uses the return value of
+    // the Write.endTransmisstion to see if
+    // a device did acknowledge to the address.
+    Wire.beginTransmission(address);
+    error = Wire.endTransmission();
 
-// Read water level
+    if (error == 0)
+    {
+      Serial.print("I2C device found at address 0x");
+      if (address<16) 
+        Serial.print("0");
+      Serial.print(address,HEX);
+      Serial.println("  !");
 
-// Read temperature, pressure, humidity and light lux
-  Wire.begin(I2C_SCL,I2C_SCA);
-// Start BME280
+      nDevices++;
+    }
+    else if (error==4) 
+    {
+      Serial.print("Unknown error at address 0x");
+      if (address<16) 
+        Serial.print("0");
+      Serial.println(address,HEX);
+    }    
+  }
+  if (nDevices == 0)
+    Serial.println("No I2C devices found\n");
+  else
+    Serial.println("done\n");
+}
+
+
+/*
+** Read poor version of sensor (without humidity)
+*/
+void read_bmp(){
+  // Start BMP280
+  Adafruit_BMP280 bmp; // I2C
+  
+  if (bmp.begin(0x76)) {
+    /* Default settings from datasheet. */
+    bmp.setSampling(Adafruit_BMP280::MODE_NORMAL,     /* Operating Mode. */
+                  Adafruit_BMP280::SAMPLING_X2,     /* Temp. oversampling */
+                  Adafruit_BMP280::SAMPLING_X16,    /* Pressure oversampling */
+                  Adafruit_BMP280::FILTER_X16,      /* Filtering. */
+                  Adafruit_BMP280::STANDBY_MS_500); /* Standby time. */
+
+    Serial.print("Temperature = ");
+    Serial.print(temperatureValue=bmp.readTemperature());
+    Serial.println(" *C");
+
+    Serial.print("Pressure = ");
+
+    Serial.print(pressureValue=bmp.readPressure() / 100.0F);
+    Serial.println(" hPa");
+
+    Serial.print("Approx. Altitude = ");
+    Serial.print(altitudeValue=bmp.readAltitude(SEALEVELPRESSURE_HPA));
+    Serial.println(" m");
+
+    Serial.print("Humidity = ");
+    Serial.print(humidityValue=0);
+    Serial.println(" %");
+  }
+}
+
+/*
+** Read reacher version of sensor (with humidity)
+*/
+void read_bme(){
+  // Start BME280
+  Adafruit_BME280 bme; // I2C
+
   if (bme.begin(0x76, &Wire)) {
        bme.setSampling(Adafruit_BME280::MODE_FORCED,
                     Adafruit_BME280::SAMPLING_X16,  // temperature
@@ -303,7 +382,24 @@ void read_sensors(){
     Serial.println(" %");
   }
 
+}
 
+/*
+** 
+*/
+void read_sensors(){
+  digitalWrite(LED_BUILTIN, LOW);  // Turn the LED on by making the voltage LOW - just to see the sensor is operating
+
+//
+// Enable sensors
+  digitalWrite(SensorEnaPin, HIGH);  // Turn the relay ON
+  delay(200);
+
+  Serial.println("Trying to read outside sensors...");
+// Read temperature, pressure, humidity and light lux
+  Wire.begin(I2C_SCL,I2C_SCA);
+
+  read_bmp();
 // Start light sensor
   if (lightMeter.begin(BH1750::ONE_TIME_HIGH_RES_MODE)) {
     delay(200);
@@ -322,12 +418,15 @@ void read_sensors(){
     sol_volt = readChannel(ADS1115_COMP_1_GND);
     Serial.printf(" Battery voltage: %f,  solar voltage: %f\n",bat_volt, sol_volt);
   }
-  
+
+  delay(3000);
   digitalWrite(SensorEnaPin, LOW);  // Turn the sensor relay OFF
+  
+  Serial.println("Read outside sensors ends now.");
 
 
 
-
+// Read water level
 // Enable water sensor
   digitalWrite(WaterEnaPin, HIGH);  // Turn the relay ON
   delay(500);
@@ -412,10 +511,11 @@ void setup() {
     }
     // End of RTC
 
-    
     readMoisture();
 
     read_sensors();
+
+//    i2c_scanner();  // for debuging
   
     char msg[220];
     sprintf(msg,"{\"moisture1\":%d,\"moisture2\":%d,\"temperature\":%.2f,\"humidity\":%.1f,\"pressure\":%.1f,\"altitude\":%.1f,\"illuminance\":%.1f,\"water_level\":%d,\"voltage_battery\":%0.2f,\"voltage_solar\":%0.2f}",outputValue01,outputValue02,temperatureValue,humidityValue,pressureValue,altitudeValue,illuValue,waterValue,bat_volt,sol_volt);
@@ -437,6 +537,8 @@ void setup() {
   digitalWrite(I2C_SCL, LOW);
   digitalWrite(I2C_SCA, LOW);
 
+  Serial.flush();   // no deep sleep without this on some boards
+  
   //ESP.deepSleep(30e6);
   //ESP.deepSleep(60e6);
   //ESP.deepSleep(120e6);
